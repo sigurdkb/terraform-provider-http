@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"mime"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
 	"github.com/hashicorp/terraform-plugin-sdk/v2/helper/schema"
+	"github.com/tomnomnom/linkheader"
 )
 
 func dataSource() *schema.Resource {
@@ -42,13 +44,13 @@ func dataSource() *schema.Resource {
 				},
 			},
 
-			"response_headers": {
-				Type:     schema.TypeMap,
-				Computed: true,
-				Elem: &schema.Schema{
-					Type: schema.TypeString,
-				},
-			},
+			// "response_headers": {
+			// 	Type:     schema.TypeMap,
+			// 	Computed: true,
+			// 	Elem: &schema.Schema{
+			// 		Type: schema.TypeString,
+			// 	},
+			// },
 		},
 	}
 }
@@ -59,51 +61,31 @@ func dataSourceRead(ctx context.Context, d *schema.ResourceData, meta interface{
 
 	client := &http.Client{}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return append(diags, diag.Errorf("Error creating request: %s", err)...)
-	}
-
-	for name, value := range headers {
-		req.Header.Set(name, value.(string))
-	}
-
-	resp, err := client.Do(req)
+	bytes, err := recursiveGetWithContext(client, ctx, url, headers)
 	if err != nil {
 		return append(diags, diag.Errorf("Error making request: %s", err)...)
 	}
 
-	defer resp.Body.Close()
-
-	if resp.StatusCode != 200 {
-		return append(diags, diag.Errorf("HTTP request error. Response code: %d", resp.StatusCode)...)
-	}
-
-	contentType := resp.Header.Get("Content-Type")
-	if contentType == "" || isContentTypeText(contentType) == false {
-		diags = append(diags, diag.Diagnostic{
-			Severity: diag.Warning,
-			Summary:  fmt.Sprintf("Content-Type is not recognized as a text type, got %q", contentType),
-			Detail:   "If the content is binary data, Terraform may not properly handle the contents of the response.",
-		})
-	}
-
-	bytes, err := ioutil.ReadAll(resp.Body)
+	// responseHeaders := make(map[string]string)
+	// for k, v := range resp.Header {
+	// 	// Concatenate according to RFC2616
+	// 	// cf. https://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2
+	// 	responseHeaders[k] = strings.Join(v, ", ")
+	// }
+	var users []User
+	err = json.Unmarshal(bytes, &users)
 	if err != nil {
-		return append(diags, diag.FromErr(err)...)
+		return append(diags, diag.Errorf("Error filtering json: %s", err)...)
+	}
+	result, err := json.Marshal(users)
+	if err != nil {
+		return append(diags, diag.Errorf("Error filtering json: %s", err)...)
 	}
 
-	responseHeaders := make(map[string]string)
-	for k, v := range resp.Header {
-		// Concatenate according to RFC2616
-		// cf. https://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2
-		responseHeaders[k] = strings.Join(v, ", ")
-	}
-
-	d.Set("body", string(bytes))
-	if err = d.Set("response_headers", responseHeaders); err != nil {
-		return append(diags, diag.Errorf("Error setting HTTP response headers: %s", err)...)
-	}
+	d.Set("body", string(result))
+	// if err = d.Set("response_headers", responseHeaders); err != nil {
+	// 	return append(diags, diag.Errorf("Error setting HTTP response headers: %s", err)...)
+	// }
 
 	// set ID as something more stable than time
 	d.SetId(url)
@@ -136,3 +118,73 @@ func isContentTypeText(contentType string) bool {
 
 	return false
 }
+
+func recursiveGetWithContext(client *http.Client, ctx context.Context, url string, headers map[string]interface{}) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	for name, value := range headers {
+		req.Header.Set(name, value.(string))
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		return nil, fmt.Errorf("HTTP request error. Response code: %d", resp.StatusCode)
+	}
+
+	contentType := resp.Header.Get("Content-Type")
+	if contentType == "" || !isContentTypeText(contentType) {
+		return nil, fmt.Errorf("Content-Type is not recognized as a text type, got %q", contentType)
+	}
+
+	results, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	links := linkheader.Parse(resp.Header.Get("Link")).FilterByRel("next")
+	if len(links) != 0 {
+		recurse, err := recursiveGetWithContext(client, ctx, links[0].URL, headers)
+		if err != nil {
+			return nil, err
+		}
+		results = append(results[:len(results)-1], ',')
+		results = append(results, recurse[1:]...)
+	}
+
+	return results, nil
+}
+
+// func getResults(client *http.Client, URL string) ([]byte, error) {
+
+// 	resp, err := client.Do(req)
+// 	if err != nil {
+// 		return append(diags, diag.Errorf("Error making request: %s", err)...)
+// 	}
+
+// 	resp, err := c.RESTClient.R().Get(URL)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+
+// 	results := resp.Body()
+
+// 	links := linkheader.Parse(resp.Header().Get("Link")).FilterByRel("next")
+// 	if len(links) != 0 {
+// 		recurse, err := c.getResults(links[0].URL)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 		results = append(results[:len(results)-1], ',')
+// 		results = append(results, recurse[1:]...)
+// 	}
+// 	return results, nil
+// }
