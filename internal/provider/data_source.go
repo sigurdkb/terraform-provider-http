@@ -7,7 +7,9 @@ import (
 	"io/ioutil"
 	"mime"
 	"net/http"
+	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-sdk/v2/diag"
@@ -20,7 +22,7 @@ func dataSource() *schema.Resource {
 		ReadContext: dataSourceRead,
 
 		Schema: map[string]*schema.Schema{
-			"url": {
+			"base_url": {
 				Type:     schema.TypeString,
 				Required: true,
 				Elem: &schema.Schema{
@@ -28,11 +30,19 @@ func dataSource() *schema.Resource {
 				},
 			},
 
-			"request_headers": {
-				Type:     schema.TypeMap,
-				Optional: true,
+			"token": {
+				Type:     schema.TypeString,
+				Required: true,
 				Elem: &schema.Schema{
 					Type: schema.TypeString,
+				},
+			},
+
+			"course_code": {
+				Type:     schema.TypeInt,
+				Required: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeInt,
 				},
 			},
 
@@ -43,43 +53,33 @@ func dataSource() *schema.Resource {
 					Type: schema.TypeString,
 				},
 			},
-
-			// "response_headers": {
-			// 	Type:     schema.TypeMap,
-			// 	Computed: true,
-			// 	Elem: &schema.Schema{
-			// 		Type: schema.TypeString,
-			// 	},
-			// },
 		},
 	}
 }
 
 func dataSourceRead(ctx context.Context, d *schema.ResourceData, meta interface{}) (diags diag.Diagnostics) {
-	url := d.Get("url").(string)
-	headers := d.Get("request_headers").(map[string]interface{})
+	baseUrl := d.Get("base_url").(string)
+	token := d.Get("token").(string)
+	courseCode := strconv.Itoa(d.Get("course_code").(int))
 
 	client := &http.Client{}
 
-	bytes, err := recursiveGetWithContext(client, ctx, url, headers)
+	req, err := http.NewRequestWithContext(ctx, "GET", baseUrl+"/api/v1/courses/"+courseCode+"/users/", nil)
+	if err != nil {
+		return append(diags, diag.Errorf("Error creating request: %s", err)...)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	bytes, err := recursiveDo(client, req)
 	if err != nil {
 		return append(diags, diag.Errorf("Error making request: %s", err)...)
 	}
 
-	// responseHeaders := make(map[string]string)
-	// for k, v := range resp.Header {
-	// 	// Concatenate according to RFC2616
-	// 	// cf. https://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2
-	// 	responseHeaders[k] = strings.Join(v, ", ")
-	// }
-
 	d.Set("body", string(bytes))
-	// if err = d.Set("response_headers", responseHeaders); err != nil {
-	// 	return append(diags, diag.Errorf("Error setting HTTP response headers: %s", err)...)
-	// }
 
 	// set ID as something more stable than time
-	d.SetId(url)
+	d.SetId(courseCode)
 
 	return diags
 }
@@ -110,15 +110,7 @@ func isContentTypeText(contentType string) bool {
 	return false
 }
 
-func recursiveGetWithContext(client *http.Client, ctx context.Context, url string, headers map[string]interface{}) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	for name, value := range headers {
-		req.Header.Set(name, value.(string))
-	}
+func recursiveDo(client *http.Client, req *http.Request) ([]byte, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -152,7 +144,16 @@ func recursiveGetWithContext(client *http.Client, ctx context.Context, url strin
 
 	links := linkheader.Parse(resp.Header.Get("Link")).FilterByRel("next")
 	if len(links) != 0 {
-		recurse, err := recursiveGetWithContext(client, ctx, links[0].URL, headers)
+		url, err := url.Parse(links[0].URL)
+		if err != nil {
+			return nil, err
+		}
+		req.URL.RawQuery = url.RawQuery
+		//recReq, err := http.NewRequestWithContext(req.Context(), "GET", links[0].URL, nil)
+		if err != nil {
+			return nil, err
+		}
+		recurse, err := recursiveDo(client, req)
 		if err != nil {
 			return nil, err
 		}
