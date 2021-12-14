@@ -72,17 +72,8 @@ func dataSourceRead(ctx context.Context, d *schema.ResourceData, meta interface{
 	// 	// cf. https://www.w3.org/Protocols/rfc2616/rfc2616-sec4.html#sec4.2
 	// 	responseHeaders[k] = strings.Join(v, ", ")
 	// }
-	var users []User
-	err = json.Unmarshal(bytes, &users)
-	if err != nil {
-		return append(diags, diag.Errorf("Error filtering json: %s", err)...)
-	}
-	result, err := json.Marshal(users)
-	if err != nil {
-		return append(diags, diag.Errorf("Error filtering json: %s", err)...)
-	}
 
-	d.Set("body", string(result))
+	d.Set("body", string(bytes))
 	// if err = d.Set("response_headers", responseHeaders); err != nil {
 	// 	return append(diags, diag.Errorf("Error setting HTTP response headers: %s", err)...)
 	// }
@@ -145,9 +136,18 @@ func recursiveGetWithContext(client *http.Client, ctx context.Context, url strin
 		return nil, fmt.Errorf("Content-Type is not recognized as a text type, got %q", contentType)
 	}
 
-	results, err := ioutil.ReadAll(resp.Body)
+	bytes, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
+	}
+	var users []User
+	err = json.Unmarshal(bytes, &users)
+	if err != nil {
+		return nil, fmt.Errorf("error unmarshaling json: %s", err)
+	}
+	results, err := json.Marshal(users)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling json: %s", err)
 	}
 
 	links := linkheader.Parse(resp.Header.Get("Link")).FilterByRel("next")
