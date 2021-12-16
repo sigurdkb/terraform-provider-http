@@ -17,33 +17,24 @@ func dataSource() *schema.Resource {
 			"base_url": {
 				Type:     schema.TypeString,
 				Required: true,
-				// Elem: &schema.Schema{
-				// 	Type: schema.TypeString,
-				// },
 			},
 
 			"token": {
 				Type:     schema.TypeString,
 				Required: true,
-				// Elem: &schema.Schema{
-				// 	Type: schema.TypeString,
-				// },
 			},
 
-			"course_code": {
-				Type:     schema.TypeInt,
+			"course_codes": {
+				Type:     schema.TypeList,
 				Required: true,
-				// Elem: &schema.Schema{
-				// 	Type: schema.TypeInt,
-				// },
+				Elem: &schema.Schema{
+					Type: schema.TypeInt,
+				},
 			},
 
 			"body": {
 				Type:     schema.TypeString,
 				Computed: true,
-				Elem: &schema.Schema{
-					Type: schema.TypeString,
-				},
 			},
 		},
 	}
@@ -52,14 +43,19 @@ func dataSource() *schema.Resource {
 func dataSourceRead(ctx context.Context, d *schema.ResourceData, meta interface{}) (diags diag.Diagnostics) {
 	baseUrl := d.Get("base_url").(string)
 	token := d.Get("token").(string)
-	courseCode := d.Get("course_code").(int)
+	courseCodeI := d.Get("course_codes").([]interface{})
+
+	courseCodes := make([]int, len(courseCodeI))
+	for i, vI := range courseCodeI {
+		courseCodes[i] = vI.(int)
+	}
 
 	client, err := canvaslms.NewClient(&baseUrl, &token)
 	if err != nil {
 		return append(diags, diag.Errorf("Error creating rest client: %s", err)...)
 	}
 
-	course, err := client.GetCourse(courseCode)
+	course, err := client.GetCourses(courseCodes)
 	if err != nil {
 		return append(diags, diag.Errorf("Error retreiving course: %s", err)...)
 	}
